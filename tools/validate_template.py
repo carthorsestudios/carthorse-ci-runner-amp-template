@@ -85,6 +85,9 @@ def main() -> int:
             fail(f"missing KVP contract: {required_line}")
     if "CARTHORSE_GITHUB_TOKEN" in kvp:
         fail("KVP must not expose a long-lived GitHub administration token")
+    for package in ("xz-utils", "zip", "unzip", "procps"):
+        if f'"{package}"' not in kvp:
+            fail(f"missing required container package: {package}")
     ok("container and temporary-token AMP contracts")
 
     digest = hashlib.sha256(SUPERVISOR.read_bytes()).hexdigest()
@@ -121,6 +124,10 @@ def main() -> int:
         "supervisor process hardening": "PR_SET_DUMPABLE",
         "release digest verification": 'digest.startswith("sha256:")',
         "workspace scrub": "_scrub_work()",
+        "base-tool preflight": "_require_base_tools()",
+        "zip base tool": '"zip"',
+        "unzip base tool": '"unzip"',
+        "ps base tool": '"ps"',
     }
     for label, needle in checks.items():
         if needle not in supervisor_text:
