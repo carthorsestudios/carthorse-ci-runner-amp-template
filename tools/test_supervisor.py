@@ -133,12 +133,31 @@ def test_registration_fingerprint() -> None:
         sup.RUNNER_DIR = original_runner
 
 
+
+def test_base_tool_preflight() -> None:
+    original = sup.shutil.which
+    try:
+        sup.shutil.which = lambda name: f"/usr/bin/{name}"
+        sup._require_base_tools()
+        print("OK: complete base toolchain accepted")
+        sup.shutil.which = lambda name: None if name == "zip" else f"/usr/bin/{name}"
+        try:
+            sup._require_base_tools()
+        except sup.ConfigError as exc:
+            check("zip" in str(exc), "missing base tool rejected")
+        else:
+            raise AssertionError("missing base tool was accepted")
+    finally:
+        sup.shutil.which = original
+
+
 def main() -> int:
     test_config_validation()
     test_child_environment_secret_scrub()
     test_release_asset_selection()
     test_tar_path_guard()
     test_registration_fingerprint()
+    test_base_tool_preflight()
     print("PASS: supervisor unit checks")
     return 0
 
