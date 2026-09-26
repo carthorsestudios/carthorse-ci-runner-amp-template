@@ -26,11 +26,12 @@ def ok(message: str) -> None:
 
 def bootstrap_from_kvp(kvp: str) -> str:
     line = next((x for x in kvp.splitlines() if x.startswith("App.CommandLineArgs=")), "")
-    marker = "${IFS}%s${IFS}"
-    if marker not in line or "|base64${IFS}-d)" not in line:
+    marker = "$" + "{IFS}%s$" + "{IFS}"
+    decode_marker = "|base64$" + "{IFS}-d)"
+    if marker not in line or decode_marker not in line:
         fail("unable to locate KVP bootstrap")
-    if "\\${IFS}" in line or "\\$(" in line:
-        fail("KVP launch command must not escape shell expansion tokens")
+    if chr(92) in line:
+        fail("KVP launch command must not contain backslash-escaped shell expansion tokens")
     encoded = line.split(marker, 1)[1].split("|base64", 1)[0]
     try:
         return base64.b64decode(encoded, validate=True).decode("utf-8")
@@ -54,7 +55,8 @@ def main() -> int:
     ok("required template files present")
 
     subprocess.run([sys.executable, "-m", "py_compile", str(SUPERVISOR)], check=True)
-    ok("supervisor compiles")
+    subprocess.run([sys.executable, str(ROOT / "tools" / "test_supervisor.py")], check=True)
+    ok("supervisor compiles and unit checks pass")
 
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("prefix") != "CARTHORSECI" or manifest.get("repotype") != "AppTemplates":
@@ -63,22 +65,28 @@ def main() -> int:
 
     fields = json.loads(CONFIG.read_text(encoding="utf-8"))
     by_name = {item.get("FieldName"): item for item in fields}
-    token_field = by_name.get("GitHubToken", {})
+    if "GitHubToken" in by_name:
+        fail("long-lived GitHub administration PAT field must not exist")
+    token_field = by_name.get("RegistrationToken", {})
     if token_field.get("InputType") != "password" or token_field.get("DefaultValue"):
-        fail("GitHub token field must be password type with no default")
-    ok("GitHub token is secret and has no committed default")
+        fail("registration token field must be password type with no default")
+    if not token_field.get("SkipIfEmpty"):
+        fail("registration token must be optional after first setup")
+    ok("only a temporary registration token is configured")
 
     kvp = KVP.read_text(encoding="utf-8")
     for required_line in [
         "Meta.DockerRequired=True",
         "Meta.ContainerPolicy=Required",
         "Meta.SpecificDockerImage=cubecoders/ampbase:debian",
-        "CARTHORSE_GITHUB_TOKEN",
+        "CARTHORSE_REGISTRATION_TOKEN",
         "Console.AppReadyRegex=",
     ]:
         if required_line not in kvp:
             fail(f"missing KVP contract: {required_line}")
-    ok("container and AMP runtime contracts")
+    if "CARTHORSE_GITHUB_TOKEN" in kvp:
+        fail("KVP must not expose a long-lived GitHub administration token")
+    ok("container and temporary-token AMP contracts")
 
     digest = hashlib.sha256(SUPERVISOR.read_bytes()).hexdigest()
     bootstrap = bootstrap_from_kvp(kvp)
@@ -95,28 +103,44 @@ def main() -> int:
 
     supervisor_text = SUPERVISOR.read_text(encoding="utf-8")
     checks = {
-        "ephemeral runner flag": '"--ephemeral"',
-        "runner update disabled per cycle": '"--disableupdate"',
+        "single-job listener": '["./run.sh", "--once"]',
+        "persistent registration": '".credentials_rsaparams"',
+        "registration fingerprint": "_assert_registration_unchanged",
         "fresh HOME": '"HOME": str(home)',
         "fresh temp": '"TMPDIR": str(tmp)',
         "fresh tool cache": '"RUNNER_TOOL_CACHE": str(tool_cache)',
-        "PAT removed from child environment": 'env.pop("GITHUB_TOKEN", None)',
+        "temporary token removed from child environment": 'key == "CARTHORSE_REGISTRATION_TOKEN"',
         "supervisor process hardening": "PR_SET_DUMPABLE",
         "release digest verification": 'digest.startswith("sha256:")',
-        "cycle deletion": "shutil.rmtree(cycle)",
+        "workspace scrub": "_scrub_work()",
     }
     for label, needle in checks.items():
         if needle not in supervisor_text:
             fail(label)
-    ok("ephemeral isolation and credential-boundary invariants")
+
+    forbidden = [
+        '"--ephemeral"',
+        '"--disableupdate"',
+        "registration-token" + '")',
+        'Authorization' + '": f"Bearer',
+        "CARTHORSE_GITHUB_TOKEN",
+    ]
+    for needle in forbidden:
+        if needle in supervisor_text:
+            fail(f"forbidden long-lived/admin or repeated-registration behavior remains: {needle}")
+    ok("one-time-registration and clean-job invariants")
 
     searchable = []
     for path in ROOT.rglob("*"):
         if path.is_file() and path.name != "bootstrap.sh":
             searchable.append(path.read_text(encoding="utf-8", errors="ignore"))
-    if re.search(r"github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+", "\n".join(searchable)):
+    text = "\n".join(searchable)
+    if re.search(r"github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+", text):
         fail("repository appears to contain a GitHub token literal")
-    ok("no obvious GitHub token literal")
+    forbidden_admin_phrase = "Administration:" + " Read and write"
+    if forbidden_admin_phrase in text:
+        fail("documentation must not instruct storing repository administration credentials")
+    ok("no admin-PAT instructions or obvious GitHub token literal")
     return 0
 
 
