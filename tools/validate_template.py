@@ -89,6 +89,15 @@ def main() -> int:
 
     digest = hashlib.sha256(SUPERVISOR.read_bytes()).hexdigest()
     bootstrap = bootstrap_from_kvp(kvp)
+    if "\n" in bootstrap or "\r" in bootstrap:
+        fail("AMP bootstrap must be single-line; command substitution collapses newlines")
+    syntax = subprocess.run(
+        ["/bin/bash", "-n", "-c", bootstrap],
+        capture_output=True,
+        text=True,
+    )
+    if syntax.returncode != 0:
+        fail(f"AMP bootstrap shell syntax invalid: {syntax.stderr.strip()}")
     if f"EXPECTED={digest}" not in bootstrap:
         fail("KVP bootstrap does not pin the current supervisor SHA-256")
     if "raw.githubusercontent.com/carthorsestudios/carthorse-ci-runner-amp-template/main/control/carthorse_ci_supervisor.py" not in bootstrap:
