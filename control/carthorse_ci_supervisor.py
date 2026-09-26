@@ -431,6 +431,7 @@ def main() -> int:
 
     if not _configured():
         _install_and_register(config, runner_name)
+    config["registration_token"] = ""
 
     # The persistent registration credential files are not repository-admin
     # credentials. Still, fail closed if a job tampers with them.
