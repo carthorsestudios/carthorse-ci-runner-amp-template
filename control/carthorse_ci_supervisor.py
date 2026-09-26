@@ -37,6 +37,7 @@ LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PR_SET_DUMPABLE = 4
+BASE_TOOLS = ("bash", "git", "tar", "xz", "python3", "curl", "sha256sum", "zip", "unzip", "ps")
 
 ROOT = Path.cwd().resolve()
 CONTROL_DIR = ROOT / "control"
@@ -111,6 +112,16 @@ def _harden_supervisor_process() -> None:
     if result != 0:
         err = ctypes.get_errno()
         raise RuntimeError(f"Unable to harden supervisor process with prctl: errno={err}")
+
+
+def _require_base_tools() -> None:
+    missing = [tool for tool in BASE_TOOLS if shutil.which(tool) is None]
+    if missing:
+        raise ConfigError(
+            "Missing required CI base tools: "
+            + ", ".join(missing)
+            + ". Fetch the latest AMP template and recreate/update the CI container before running jobs."
+        )
 
 
 def _child_environment() -> dict[str, str]:
@@ -415,6 +426,7 @@ def main() -> int:
     global STOP_REQUESTED
     config = _require_config()
     _harden_supervisor_process()
+    _require_base_tools()
 
     # A GitHub registration token is single-purpose and time-limited. Remove it
     # from the process environment before any runner/job process is started.

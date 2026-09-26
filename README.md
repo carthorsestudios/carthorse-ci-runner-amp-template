@@ -85,7 +85,7 @@ After the self-hosted verifier is proven stable, other workloads can be migrated
 
 ## Toolchain flexibility
 
-The base container supplies Linux, Python, Git, curl, archive utilities, and the native libraries required by the GitHub runner. Project workflows remain free to use standard setup actions such as `actions/setup-node`, `actions/setup-python`, and project-specific installers.
+The base container explicitly supplies Linux, Python, Git, curl, tar/xz, `zip`, `unzip`, `ps`/procps, and the native libraries required by the GitHub runner. The supervisor checks these baseline tools before advertising the runner as Ready. Project workflows remain free to use standard setup actions such as `actions/setup-node`, `actions/setup-python`, and project-specific installers.
 
 Normal additions of tests, TypeScript modules, Python scripts, packaging checks, or validators do **not** require changing this AMP template. A template change is only likely when a project begins requiring a materially new host capability such as Docker service containers, GPU tooling, Windows-specific compilation, or another privileged system facility.
 
@@ -101,7 +101,7 @@ Run:
 python3 tools/validate_template.py
 ```
 
-The validator checks template identity, container isolation, the absence of a long-lived administration PAT, supervisor compilation/unit tests, the pinned bootstrap SHA-256, one-job-at-a-time behavior, workspace scrubbing, and registration-file tamper detection.
+The validator checks template identity, container isolation, the absence of a long-lived administration PAT, supervisor compilation/unit tests, the pinned bootstrap SHA-256, the explicit base-tool package set, one-job-at-a-time behavior, workspace scrubbing, and registration-file tamper detection.
 
 ## Important limitations
 
