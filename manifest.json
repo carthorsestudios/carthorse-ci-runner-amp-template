@@ -1,0 +1,9 @@
+{
+  "id": "e0fc20ae-b177-471c-b988-87683e692992",
+  "authors": ["Cart Horse Studios"],
+  "origin": "https://github.com/carthorsestudios/carthorse-ci-runner-amp-template.git",
+  "url": "https://github.com/carthorsestudios/carthorse-ci-runner-amp-template",
+  "imagefile": "",
+  "prefix": "CARTHORSECI",
+  "repotype": "AppTemplates"
+}
