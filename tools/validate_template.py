@@ -183,7 +183,7 @@ def main() -> int:
         "release digest verification": 'digest.startswith("sha256:")',
         "workspace scrub": "_scrub_work()",
         "base-tool preflight": "_require_base_tools()",
-        "supervisor revision": 'SUPERVISOR_REVISION = "8"',
+        "supervisor revision": 'SUPERVISOR_REVISION = "9"',
         "trusted content-addressed objects": 'TRUSTED_OBJECTS_DIR = TRUSTED_DIR / "objects" / "sha256"',
         "trusted ZIP extraction": "_safe_extract_zip",
         "trusted content tree": "_tree_manifest",
