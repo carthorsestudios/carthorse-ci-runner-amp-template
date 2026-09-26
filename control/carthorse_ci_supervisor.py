@@ -123,7 +123,7 @@ def _require_base_tools() -> None:
             + ", ".join(missing)
             + ". Fetch the latest AMP template and recreate/update the CI container before running jobs."
         )
-    log(f"Base tools OK revision={SUPERVISOR_REVISION} tools={\',\'.join(BASE_TOOLS)}")
+    tools_text = ",".join(BASE_TOOLS)\n    log(f"Base tools OK revision={SUPERVISOR_REVISION} tools={tools_text}")
 
 
 def _child_environment() -> dict[str, str]:
