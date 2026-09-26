@@ -28,7 +28,7 @@ def test_config_validation() -> None:
         os.environ.update(
             {
                 "CARTHORSE_GITHUB_REPOSITORY": "carthorsestudios/poobiverse-classic",
-                "CARTHORSE_GITHUB_TOKEN": "dummy-secret",
+                "CARTHORSE_REGISTRATION_TOKEN": "one-hour-setup-token",
                 "CARTHORSE_RUNNER_LABELS": "carthorse-ci,oldgrid",
                 "CARTHORSE_RUNNER_NAME_PREFIX": "carthorse-oldgrid",
                 "CARTHORSE_RUNNER_VERSION": "latest",
@@ -37,6 +37,10 @@ def test_config_validation() -> None:
         )
         cfg = sup._require_config()
         check(cfg["repository"] == "carthorsestudios/poobiverse-classic", "valid repository config")
+        check(cfg["registration_token"] == "one-hour-setup-token", "registration token accepted for setup")
+        os.environ.pop("CARTHORSE_REGISTRATION_TOKEN")
+        cfg = sup._require_config()
+        check(cfg["registration_token"] == "", "registration token optional after setup")
         os.environ["CARTHORSE_GITHUB_REPOSITORY"] = "bad repo"
         try:
             sup._require_config()
@@ -52,12 +56,12 @@ def test_config_validation() -> None:
 def test_child_environment_secret_scrub() -> None:
     original = os.environ.copy()
     try:
-        os.environ["CARTHORSE_GITHUB_TOKEN"] = "top-secret"
+        os.environ["CARTHORSE_REGISTRATION_TOKEN"] = "temporary-secret"
         os.environ["GITHUB_TOKEN"] = "job-secret"
         os.environ["GH_TOKEN"] = "gh-secret"
         os.environ["NORMAL_VALUE"] = "keep-me"
         child = sup._child_environment()
-        check("CARTHORSE_GITHUB_TOKEN" not in child, "AMP PAT removed from child environment")
+        check("CARTHORSE_REGISTRATION_TOKEN" not in child, "registration token removed from child environment")
         check("GITHUB_TOKEN" not in child and "GH_TOKEN" not in child, "ambient GitHub tokens removed from child environment")
         check(child.get("NORMAL_VALUE") == "keep-me", "non-secret environment retained")
     finally:
@@ -108,11 +112,33 @@ def test_tar_path_guard() -> None:
             raise AssertionError("traversal archive was accepted")
 
 
+def test_registration_fingerprint() -> None:
+    original_runner = sup.RUNNER_DIR
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            runner = Path(temp)
+            sup.RUNNER_DIR = runner
+            for name in ("run.sh", "config.sh", ".runner", ".credentials", ".credentials_rsaparams"):
+                (runner / name).write_text(name, encoding="utf-8")
+            baseline = sup._registration_fingerprint()
+            sup._assert_registration_unchanged(baseline)
+            (runner / ".credentials").write_text("tampered", encoding="utf-8")
+            try:
+                sup._assert_registration_unchanged(baseline)
+            except RuntimeError:
+                print("OK: registration tampering rejected")
+            else:
+                raise AssertionError("registration tampering was accepted")
+    finally:
+        sup.RUNNER_DIR = original_runner
+
+
 def main() -> int:
     test_config_validation()
     test_child_environment_secret_scrub()
     test_release_asset_selection()
     test_tar_path_guard()
+    test_registration_fingerprint()
     print("PASS: supervisor unit checks")
     return 0
 
