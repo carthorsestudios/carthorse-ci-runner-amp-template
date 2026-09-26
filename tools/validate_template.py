@@ -125,6 +125,8 @@ def main() -> int:
         "release digest verification": 'digest.startswith("sha256:")',
         "workspace scrub": "_scrub_work()",
         "base-tool preflight": "_require_base_tools()",
+        "preflight revision log": "Base tools OK revision=",
+        "supervisor revision": 'SUPERVISOR_REVISION = "6"',
         "zip base tool": '"zip"',
         "unzip base tool": '"unzip"',
         "ps base tool": '"ps"',
