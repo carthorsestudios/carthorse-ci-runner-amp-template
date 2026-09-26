@@ -26,12 +26,11 @@ def ok(message: str) -> None:
 
 def bootstrap_from_kvp(kvp: str) -> str:
     line = next((x for x in kvp.splitlines() if x.startswith("App.CommandLineArgs=")), "")
-    marker = "$" + "{IFS}%s$" + "{IFS}"
-    decode_marker = "|base64$" + "{IFS}-d)"
-    if marker not in line or decode_marker not in line:
+    marker = "${IFS}%s${IFS}"
+    if marker not in line or "|base64${IFS}-d)" not in line:
         fail("unable to locate KVP bootstrap")
-    if chr(92) in line:
-        fail("KVP launch command must not contain backslash-escaped shell expansion tokens")
+    if "\\${IFS}" in line or "\\$(" in line:
+        fail("KVP launch command must not escape shell expansion tokens")
     encoded = line.split(marker, 1)[1].split("|base64", 1)[0]
     try:
         return base64.b64decode(encoded, validate=True).decode("utf-8")
@@ -117,17 +116,16 @@ def main() -> int:
     for label, needle in checks.items():
         if needle not in supervisor_text:
             fail(label)
-
     forbidden = [
         '"--ephemeral"',
         '"--disableupdate"',
-        "registration-token" + '")',
-        'Authorization' + '": f"Bearer',
+        "registration-token\")",
+        'Authorization": f"Bearer',
         "CARTHORSE_GITHUB_TOKEN",
     ]
     for needle in forbidden:
         if needle in supervisor_text:
-            fail(f"forbidden long-lived/admin or repeated-registration behavior remains: {needle}")
+            fail(f"forbidden long-lived/admin or ephemeral-registration behavior remains: {needle}")
     ok("one-time-registration and clean-job invariants")
 
     searchable = []
