@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Cart Horse CI self-hosted GitHub Actions runner supervisor.
+"""Cart Horse CI persistent repository-scoped GitHub Actions runner supervisor.
 
-The supervisor keeps exactly one repository-scoped ephemeral runner available.
-Each accepted job runs from a fresh directory with a fresh HOME, temp directory,
-work directory, and tool cache. The entire job directory is deleted afterwards.
+The runner is registered once with a time-limited GitHub registration token.
+Each invocation of run.sh uses --once so one job is accepted, then the job
+workspace, HOME, temp directory, and tool cache are destroyed before the next
+job. No long-lived repository-administration credential is required.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Any
 
 API_ROOT = "https://api.github.com"
 RUNNER_RELEASE_API = f"{API_ROOT}/repos/actions/runner/releases"
-USER_AGENT = "carthorse-ci-runner/1"
+USER_AGENT = "carthorse-ci-runner/2"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -41,7 +42,9 @@ ROOT = Path.cwd().resolve()
 CONTROL_DIR = ROOT / "control"
 STATE_DIR = CONTROL_DIR / "state"
 CACHE_DIR = CONTROL_DIR / "cache"
-CYCLES_DIR = CONTROL_DIR / "cycles"
+RUNNER_DIR = CONTROL_DIR / "runner"
+WORK_DIR = RUNNER_DIR / "_work"
+JOBS_DIR = CONTROL_DIR / "jobs"
 
 STOP_REQUESTED = False
 ACTIVE_PROCESS: subprocess.Popen[str] | None = None
@@ -65,7 +68,7 @@ def _env(name: str, default: str = "") -> str:
 
 def _require_config() -> dict[str, Any]:
     repository = _env("CARTHORSE_GITHUB_REPOSITORY")
-    token = os.environ.get("CARTHORSE_GITHUB_TOKEN", "").strip()
+    registration_token = os.environ.get("CARTHORSE_REGISTRATION_TOKEN", "").strip()
     labels_raw = _env("CARTHORSE_RUNNER_LABELS", "carthorse-ci")
     prefix = _env("CARTHORSE_RUNNER_NAME_PREFIX", "carthorse-ci")
     version = _env("CARTHORSE_RUNNER_VERSION", "latest")
@@ -73,8 +76,6 @@ def _require_config() -> dict[str, Any]:
 
     if not REPO_RE.fullmatch(repository):
         raise ConfigError("GitHub repository must be in owner/name form")
-    if not token:
-        raise ConfigError("GitHub runner administration token is required")
     labels = [item.strip() for item in labels_raw.split(",") if item.strip()]
     if not labels:
         raise ConfigError("At least one custom runner label is required")
@@ -93,7 +94,7 @@ def _require_config() -> dict[str, Any]:
 
     return {
         "repository": repository,
-        "token": token,
+        "registration_token": registration_token,
         "labels": labels,
         "prefix": prefix,
         "version": version,
@@ -102,7 +103,7 @@ def _require_config() -> dict[str, Any]:
 
 
 def _harden_supervisor_process() -> None:
-    """Prevent same-UID job processes from reading the supervisor's memory/environ."""
+    """Prevent same-UID job processes from reading supervisor memory/environment."""
     if sys.platform != "linux":
         raise RuntimeError("Cart Horse CI currently supports Linux only")
     libc = ctypes.CDLL(None, use_errno=True)
@@ -115,33 +116,21 @@ def _harden_supervisor_process() -> None:
 def _child_environment() -> dict[str, str]:
     env = os.environ.copy()
     for key in list(env):
-        if key == "CARTHORSE_GITHUB_TOKEN" or key.endswith("_GITHUB_TOKEN"):
+        if key == "CARTHORSE_REGISTRATION_TOKEN" or key.endswith("_GITHUB_TOKEN"):
             env.pop(key, None)
     env.pop("GITHUB_TOKEN", None)
     env.pop("GH_TOKEN", None)
     return env
 
 
-def _api_request(
-    url: str,
-    *,
-    token: str | None = None,
-    method: str = "GET",
-    payload: dict[str, Any] | None = None,
-    timeout: int = 30,
-) -> Any:
+def _api_request(url: str, *, timeout: int = 30) -> Any:
+    """Public GitHub API request. No repository administration credential is used."""
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": USER_AGENT,
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    request = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read()
@@ -150,7 +139,7 @@ def _api_request(
             return json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1000]
-        raise ApiError(f"GitHub API {method} {url} failed with HTTP {exc.code}: {detail}") from exc
+        raise ApiError(f"GitHub API GET {url} failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise ApiError(f"GitHub API request failed: {exc.reason}") from exc
 
@@ -264,51 +253,58 @@ def _persistent_instance_id() -> str:
     return value
 
 
-def _cleanup_cycle_directories() -> None:
-    CYCLES_DIR.mkdir(parents=True, exist_ok=True)
-    for child in CYCLES_DIR.iterdir():
-        if child.is_symlink():
-            child.unlink()
-        elif child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+def _configured() -> bool:
+    required = [
+        RUNNER_DIR / "run.sh",
+        RUNNER_DIR / "config.sh",
+        RUNNER_DIR / ".runner",
+        RUNNER_DIR / ".credentials",
+        RUNNER_DIR / ".credentials_rsaparams",
+    ]
+    return all(path.is_file() and not path.is_symlink() for path in required)
 
 
-def _repo_api(repository: str, suffix: str) -> str:
-    return f"{API_ROOT}/repos/{repository}/{suffix.lstrip('/')}"
+def _registration_fingerprint() -> dict[str, str]:
+    if not _configured():
+        raise RuntimeError("Runner registration state is incomplete")
+    result: dict[str, str] = {}
+    for name in (".runner", ".credentials", ".credentials_rsaparams"):
+        result[name] = _sha256(RUNNER_DIR / name)
+    return result
 
 
-def _registration_token(repository: str, token: str) -> str:
-    payload = _api_request(_repo_api(repository, "actions/runners/registration-token"), token=token, method="POST")
-    value = str((payload or {}).get("token", ""))
-    if not value:
-        raise ApiError("GitHub did not return a runner registration token")
-    return value
-
-
-def _delete_runner(repository: str, token: str, runner_id: int) -> None:
-    _api_request(_repo_api(repository, f"actions/runners/{runner_id}"), token=token, method="DELETE")
-
-
-def _cleanup_offline_registrations(repository: str, token: str, owned_prefix: str) -> int:
-    deleted = 0
-    page = 1
-    while page <= 10:
-        payload = _api_request(
-            _repo_api(repository, f"actions/runners?per_page=100&page={page}"),
-            token=token,
+def _assert_registration_unchanged(expected: dict[str, str]) -> None:
+    current = _registration_fingerprint()
+    if current != expected:
+        raise RuntimeError(
+            "Runner registration files changed during a job. Refusing to continue; "
+            "delete/recreate this CI instance and register it again."
         )
-        runners = list((payload or {}).get("runners", []))
-        for runner in runners:
-            name = str(runner.get("name", ""))
-            if name.startswith(owned_prefix) and runner.get("status") == "offline":
-                _delete_runner(repository, token, int(runner["id"]))
-                deleted += 1
-        if len(runners) < 100:
-            break
-        page += 1
-    return deleted
+
+
+def _remove_tree(path: Path, *, allowed_parent: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    resolved_parent = path.parent.resolve()
+    if resolved_parent != allowed_parent.resolve():
+        raise RuntimeError(f"Refusing to clean path outside controlled parent: {path}")
+    if path.is_symlink():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _scrub_work() -> None:
+    _remove_tree(WORK_DIR, allowed_parent=RUNNER_DIR)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _scrub_jobs() -> None:
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    for child in list(JOBS_DIR.iterdir()):
+        _remove_tree(child, allowed_parent=JOBS_DIR)
 
 
 def _signal_handler(signum: int, _frame: Any) -> None:
@@ -339,29 +335,69 @@ def _run_command(args: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         ACTIVE_PROCESS = None
 
 
-def _prepare_cycle(
-    archive: Path,
-    *,
-    runner_name: str,
-    repository: str,
-    registration_token: str,
-    labels: list[str],
-) -> tuple[Path, dict[str, str]]:
-    cycle = CYCLES_DIR / runner_name
-    if cycle.exists() or cycle.is_symlink():
-        raise RuntimeError(f"Cycle directory already exists: {cycle}")
-    runner_dir = cycle / "runner"
-    _safe_extract_tar(archive, runner_dir)
+def _install_and_register(config: dict[str, Any], runner_name: str) -> None:
+    token = config["registration_token"]
+    if not token:
+        raise ConfigError(
+            "Runner is not registered. Paste the one-hour registration token from "
+            "GitHub repository Settings > Actions > Runners > New self-hosted runner "
+            "into AMP's Initial Registration Token field, save, and start again."
+        )
 
+    if RUNNER_DIR.exists() or RUNNER_DIR.is_symlink():
+        if RUNNER_DIR.is_symlink():
+            raise RuntimeError("Refusing symlinked runner directory")
+        shutil.rmtree(RUNNER_DIR)
+
+    version, metadata = _runner_release(config["version"])
+    asset_url, asset_sha = _select_runner_asset(version, metadata)
+    archive = CACHE_DIR / "runner" / version / Path(asset_url).name
+    _download_verified(asset_url, asset_sha, archive)
+    _safe_extract_tar(archive, RUNNER_DIR)
+
+    child_env = _child_environment()
+    if os.geteuid() == 0:
+        child_env["RUNNER_ALLOW_RUNASROOT"] = "1"
+    rc = _run_command(
+        [
+            "./config.sh",
+            "--unattended",
+            "--replace",
+            "--url",
+            f"https://github.com/{config['repository']}",
+            "--token",
+            token,
+            "--name",
+            runner_name,
+            "--labels",
+            ",".join(config["labels"]),
+            "--work",
+            "_work",
+        ],
+        cwd=RUNNER_DIR,
+        env=child_env,
+    )
+    if rc != 0 or not _configured():
+        raise RuntimeError(f"Runner registration failed with exit code {rc}")
+    log(
+        f"Registered repository={config['repository']} runner={runner_name} "
+        f"version={version} labels={','.join(config['labels'])}"
+    )
+    log("Registration complete. The one-hour setup token is no longer needed; clear it from AMP.")
+
+
+def _fresh_job_environment(sequence: int) -> tuple[Path, dict[str, str]]:
+    cycle = JOBS_DIR / f"job-{sequence:06d}"
+    if cycle.exists() or cycle.is_symlink():
+        raise RuntimeError(f"Job directory already exists: {cycle}")
     home = cycle / "home"
     tmp = cycle / "tmp"
     tool_cache = cycle / "toolcache"
-    work = cycle / "work"
-    for path in (home, tmp, tool_cache, work):
+    for path in (home, tmp, tool_cache):
         path.mkdir(parents=True, exist_ok=True)
 
-    child_env = _child_environment()
-    child_env.update(
+    env = _child_environment()
+    env.update(
         {
             "HOME": str(home),
             "TMPDIR": str(tmp),
@@ -371,40 +407,8 @@ def _prepare_cycle(
         }
     )
     if os.geteuid() == 0:
-        child_env["RUNNER_ALLOW_RUNASROOT"] = "1"
-
-    config_args = [
-        "./config.sh",
-        "--unattended",
-        "--ephemeral",
-        "--disableupdate",
-        "--url",
-        f"https://github.com/{repository}",
-        "--token",
-        registration_token,
-        "--name",
-        runner_name,
-        "--labels",
-        ",".join(labels),
-        "--work",
-        str(work),
-    ]
-    rc = _run_command(config_args, cwd=runner_dir, env=child_env)
-    if rc != 0:
-        raise RuntimeError(f"Runner configuration failed with exit code {rc}")
-    return cycle, child_env
-
-
-def _remove_cycle(cycle: Path) -> None:
-    if not cycle.exists() and not cycle.is_symlink():
-        return
-    resolved_parent = cycle.parent.resolve()
-    if resolved_parent != CYCLES_DIR.resolve():
-        raise RuntimeError("Refusing to clean a cycle outside the controlled directory")
-    if cycle.is_symlink():
-        cycle.unlink()
-    else:
-        shutil.rmtree(cycle)
+        env["RUNNER_ALLOW_RUNASROOT"] = "1"
+    return cycle, env
 
 
 def main() -> int:
@@ -412,80 +416,66 @@ def main() -> int:
     config = _require_config()
     _harden_supervisor_process()
 
-    # Remove the long-lived PAT from child environments immediately. The local
-    # Python variable remains protected by PR_SET_DUMPABLE while the supervisor lives.
-    os.environ.pop("CARTHORSE_GITHUB_TOKEN", None)
+    # A GitHub registration token is single-purpose and time-limited. Remove it
+    # from the process environment before any runner/job process is started.
+    os.environ.pop("CARTHORSE_REGISTRATION_TOKEN", None)
 
     CONTROL_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _cleanup_cycle_directories()
+    _scrub_jobs()
     instance_id = _persistent_instance_id()
-    owned_prefix = f"{config['prefix']}-{instance_id}-"
+    runner_name = f"{config['prefix']}-{instance_id}"
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    deleted = _cleanup_offline_registrations(config["repository"], config["token"], owned_prefix)
-    if deleted:
-        log(f"Removed {deleted} stale offline runner registration(s)")
+    if not _configured():
+        _install_and_register(config, runner_name)
 
-    counter = 0
-    release_cache: tuple[str, dict[str, Any]] | None = None
-    release_cache_at = 0.0
+    # The persistent registration credential files are not repository-admin
+    # credentials. Still, fail closed if a job tampers with them.
+    registration_fingerprint = _registration_fingerprint()
+    _scrub_work()
+
+    sequence = 0
     while not STOP_REQUESTED:
         cycle: Path | None = None
         try:
-            now = time.monotonic()
-            if (
-                release_cache is None
-                or (config["version"] == "latest" and now - release_cache_at >= 3600)
-            ):
-                release_cache = _runner_release(config["version"])
-                release_cache_at = now
-            version, metadata = release_cache
-            asset_url, asset_sha = _select_runner_asset(version, metadata)
-            archive = CACHE_DIR / "runner" / version / Path(asset_url).name
-            _download_verified(asset_url, asset_sha, archive)
-
-            counter += 1
-            runner_name = f"{owned_prefix}{counter:06d}"
-            registration_token = _registration_token(config["repository"], config["token"])
-            cycle, child_env = _prepare_cycle(
-                archive,
-                runner_name=runner_name,
-                repository=config["repository"],
-                registration_token=registration_token,
-                labels=config["labels"],
-            )
-            runner_dir = cycle / "runner"
+            sequence += 1
+            cycle, child_env = _fresh_job_environment(sequence)
             log(
                 f"Ready repository={config['repository']} runner={runner_name} "
-                f"version={version} labels={','.join(config['labels'])}"
+                f"labels={','.join(config['labels'])}"
             )
-            rc = _run_command(["./run.sh"], cwd=runner_dir, env=child_env)
+            rc = _run_command(["./run.sh", "--once"], cwd=RUNNER_DIR, env=child_env)
+            _assert_registration_unchanged(registration_fingerprint)
+            _scrub_work()
             if STOP_REQUESTED:
                 break
-            log(f"Ephemeral runner exited with code {rc}; preparing a fresh worker")
-        except (ConfigError, ApiError, RuntimeError, OSError, tarfile.TarError) as exc:
+            log(f"Single-job runner exited with code {rc}; workspace scrubbed")
+        except (ApiError, RuntimeError, OSError, tarfile.TarError) as exc:
             if STOP_REQUESTED:
                 break
             log(f"ERROR: {exc}")
+            # Registration tampering is fail-closed: do not automatically resume.
+            if "registration" in str(exc).lower():
+                return 3
         finally:
             if cycle is not None:
                 try:
-                    _remove_cycle(cycle)
-                except Exception as cleanup_exc:  # last-resort visibility; do not hide primary failure
-                    log(f"ERROR: cycle cleanup failed: {cleanup_exc}")
+                    _remove_tree(cycle, allowed_parent=JOBS_DIR)
+                except Exception as cleanup_exc:
+                    log(f"ERROR: job environment cleanup failed: {cleanup_exc}")
+                    return 4
 
         if not STOP_REQUESTED:
             time.sleep(config["restart_delay"])
 
-    # Ephemeral runners normally deregister themselves after one job. On a stop,
-    # remove only offline registrations owned by this AMP instance.
     try:
-        _cleanup_offline_registrations(config["repository"], config["token"], owned_prefix)
+        _scrub_work()
+        _scrub_jobs()
     except Exception as exc:
-        log(f"WARNING: final stale-runner cleanup failed: {exc}")
+        log(f"WARNING: final workspace cleanup failed: {exc}")
     log("Stopped")
     return 0
 
