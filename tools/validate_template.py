@@ -113,6 +113,8 @@ def main() -> int:
     ok("no network port or AMP updater surface exposed")
 
     supervisor_text = SUPERVISOR.read_text(encoding="utf-8")
+    if 'tools_text = ",".join(BASE_TOOLS)\\n' in supervisor_text:
+        fail("supervisor contains a literal backslash-n in executable Python source")
     checks = {
         "single-job listener": '["./run.sh", "--once"]',
         "persistent registration": '".credentials_rsaparams"',
@@ -126,7 +128,7 @@ def main() -> int:
         "workspace scrub": "_scrub_work()",
         "base-tool preflight": "_require_base_tools()",
         "preflight revision log": "Base tools OK revision=",
-        "supervisor revision": 'SUPERVISOR_REVISION = "6"',
+        "supervisor revision": 'SUPERVISOR_REVISION = "7"',
         "zip base tool": '"zip"',
         "unzip base tool": '"unzip"',
         "ps base tool": '"ps"',

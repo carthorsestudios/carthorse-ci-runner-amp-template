@@ -32,7 +32,7 @@ from typing import Any
 API_ROOT = "https://api.github.com"
 RUNNER_RELEASE_API = f"{API_ROOT}/repos/actions/runner/releases"
 USER_AGENT = "carthorse-ci-runner/2"
-SUPERVISOR_REVISION = "6"
+SUPERVISOR_REVISION = "7"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -123,7 +123,8 @@ def _require_base_tools() -> None:
             + ", ".join(missing)
             + ". Fetch the latest AMP template and recreate/update the CI container before running jobs."
         )
-    tools_text = ",".join(BASE_TOOLS)\n    log(f"Base tools OK revision={SUPERVISOR_REVISION} tools={tools_text}")
+    tools_text = ",".join(BASE_TOOLS)
+    log(f"Base tools OK revision={SUPERVISOR_REVISION} tools={tools_text}")
 
 
 def _child_environment() -> dict[str, str]:
