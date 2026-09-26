@@ -26,9 +26,11 @@ def ok(message: str) -> None:
 
 def bootstrap_from_kvp(kvp: str) -> str:
     line = next((x for x in kvp.splitlines() if x.startswith("App.CommandLineArgs=")), "")
-    marker = "\\${IFS}%s\\${IFS}"
-    if marker not in line or "|base64" not in line:
+    marker = "${IFS}%s${IFS}"
+    if marker not in line or "|base64${IFS}-d)" not in line:
         fail("unable to locate KVP bootstrap")
+    if "\\${IFS}" in line or "\\$(" in line:
+        fail("KVP launch command must not escape shell expansion tokens")
     encoded = line.split(marker, 1)[1].split("|base64", 1)[0]
     try:
         return base64.b64decode(encoded, validate=True).decode("utf-8")
