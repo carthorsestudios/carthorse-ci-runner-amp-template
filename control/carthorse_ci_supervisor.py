@@ -32,7 +32,7 @@ from typing import Any
 API_ROOT = "https://api.github.com"
 RUNNER_RELEASE_API = f"{API_ROOT}/repos/actions/runner/releases"
 USER_AGENT = "carthorse-ci-runner/2"
-SUPERVISOR_REVISION = "6"
+SUPERVISOR_REVISION = "7"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
