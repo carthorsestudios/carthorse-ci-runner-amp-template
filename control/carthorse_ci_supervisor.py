@@ -36,7 +36,7 @@ from typing import Any
 API_ROOT = "https://api.github.com"
 RUNNER_RELEASE_API = f"{API_ROOT}/repos/actions/runner/releases"
 USER_AGENT = "carthorse-ci-runner/3"
-SUPERVISOR_REVISION = "8"
+SUPERVISOR_REVISION = "9"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -1034,6 +1034,8 @@ def main() -> int:
     while not STOP_REQUESTED:
         cycle: Path | None = None
         marker = ""
+        fatal_code = 0
+        stop_after_cleanup = False
         try:
             sequence += 1
             _assert_trusted_tools_unchanged(prepared_tools)
@@ -1048,30 +1050,36 @@ def main() -> int:
             _assert_trusted_tools_unchanged(prepared_tools)
             _scrub_work()
             if STOP_REQUESTED:
-                break
-            log(f"Single-job runner exited with code {rc}; workspace scrubbed and trusted tools verified")
+                stop_after_cleanup = True
+            else:
+                log(f"Single-job runner exited with code {rc}; workspace scrubbed and trusted tools verified")
         except (ApiError, RuntimeError, OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
             if STOP_REQUESTED:
-                break
-            log(f"ERROR: {exc}")
-            # Registration or trusted-tool integrity failures are fail-closed.
-            lowered = str(exc).lower()
-            if "registration" in lowered or "trusted tool" in lowered:
-                return 3
+                stop_after_cleanup = True
+            else:
+                log(f"ERROR: {exc}")
+                # Registration or trusted-tool integrity failures are fail-closed.
+                lowered = str(exc).lower()
+                if "registration" in lowered or "trusted tool" in lowered:
+                    fatal_code = 3
         finally:
             if marker:
                 try:
                     _terminate_marked_processes(marker)
                 except Exception as cleanup_exc:
                     log(f"ERROR: surviving process cleanup failed: {cleanup_exc}")
-                    return 4
+                    fatal_code = 4
             if cycle is not None:
                 try:
                     _remove_tree(cycle, allowed_parent=JOBS_DIR)
                 except Exception as cleanup_exc:
                     log(f"ERROR: job environment cleanup failed: {cleanup_exc}")
-                    return 4
+                    fatal_code = 4
 
+        if fatal_code:
+            return fatal_code
+        if stop_after_cleanup:
+            break
         if not STOP_REQUESTED:
             time.sleep(config["restart_delay"])
 
