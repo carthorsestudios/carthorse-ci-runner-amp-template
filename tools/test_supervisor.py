@@ -437,6 +437,27 @@ def test_trusted_tool_environment() -> None:
         sup.TRUSTED_OBJECTS_DIR = original
 
 
+def test_read_only_job_tree_cleanup() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        jobs = Path(temp) / "jobs"
+        job = jobs / "job-000004"
+        module = job / "home" / "go" / "pkg" / "mod" / "github.com" / "gorilla" / "websocket@v1.5.3"
+        module.mkdir(parents=True)
+        source = module / "conn.go"
+        source.write_text("package websocket\n", encoding="utf-8")
+
+        # Match the Go module cache behavior that caused Scratch workers to
+        # fail startup after their first real validation run.
+        os.chmod(source, 0o444)
+        for path in reversed(list(job.rglob("*"))):
+            if path.is_dir() and not path.is_symlink():
+                os.chmod(path, 0o555)
+        os.chmod(job, 0o555)
+
+        sup._remove_tree(job, allowed_parent=jobs)
+        check(not job.exists(), "read-only Go module cache job tree scrubbed")
+
+
 def test_surviving_process_cleanup() -> None:
     marker = "test-" + str(os.getpid())
     env = os.environ.copy()
@@ -515,6 +536,7 @@ def main() -> int:
     test_trusted_tool_retention_prunes_read_only_object()
     test_trusted_tool_manifest_and_tamper()
     test_trusted_tool_environment()
+    test_read_only_job_tree_cleanup()
     test_surviving_process_cleanup()
     test_base_tool_preflight()
     print("PASS: supervisor unit checks")
