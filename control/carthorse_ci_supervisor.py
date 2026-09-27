@@ -36,7 +36,7 @@ from typing import Any
 API_ROOT = "https://api.github.com"
 RUNNER_RELEASE_API = f"{API_ROOT}/repos/actions/runner/releases"
 USER_AGENT = "carthorse-ci-runner/3"
-SUPERVISOR_REVISION = "9"
+SUPERVISOR_REVISION = "10"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -836,6 +836,10 @@ def _remove_tree(path: Path, *, allowed_parent: Path) -> None:
     if path.is_symlink():
         path.unlink()
     elif path.is_dir():
+        # Job tools such as Go intentionally create read-only module-cache
+        # directories. Restore owner-write permission inside this already
+        # constrained ephemeral tree before removing it.
+        _make_tree_owner_writable(path)
         shutil.rmtree(path)
     else:
         path.unlink()
